@@ -1404,3 +1404,37 @@ def do_with(parser, token):
     nodelist = parser.parse(('endwith',))
     parser.delete_first_token()
     return WithNode(None, None, nodelist, extra_context=extra_context)
+
+class CaptureNode(Node):
+    def __init__(self, nodelist, varname):
+        self.nodelist = nodelist
+        self.varname = varname
+
+    def render(self, context):
+        output = mark_safe(self.nodelist.render(context).strip())
+        context[self.varname] = output
+        return ''
+
+@register.tag
+def capture(parser, token):
+    """
+    Stores the contents as a variable (instead of rendering them).
+
+    For example::
+
+        {% capture as foobar %}
+            {{ foo }}{{ bar }}
+        {% endcapture %}
+        
+        <p>This is uppercase foobar: {{ foobar|upper }}</p>
+        <p>This is lowercase foobar: {{ foobar|lower }}</p>
+
+    Leading and trailing whitespace is stripped.
+    """
+    bits = token.split_contents()
+    if not len(bits) == 3 or bits[1] != 'as':
+        raise TemplateSyntaxError("{0}' requires a variable name as an "
+            "argument in the form '{0} as varname'".format(bits[0]))
+    nodelist = parser.parse(('endcapture',))
+    parser.delete_first_token()
+    return CaptureNode(nodelist, bits[2])
