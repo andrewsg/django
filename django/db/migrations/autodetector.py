@@ -2,6 +2,7 @@ from __future__ import unicode_literals
 
 import re
 import datetime
+import itertools
 
 from django.db import models
 from django.db.migrations import operations
@@ -132,17 +133,13 @@ class MigrationAutodetector(object):
             model_state = self.to_state.models[app_label, model_name]
             # Are there any relationships out from this model? if so, punt it to the next phase.
             related_fields = []
-            for field in new_apps.get_model(app_label, model_name)._meta.local_fields:
+            for field in itertools.chain(new_apps.get_model(app_label, model_name)._meta.local_fields,
+                                         new_apps.get_model(app_label, model_name)._meta.local_many_to_many):
                 if field.rel:
                     if field.rel.to:
                         related_fields.append((field.name, field.rel.to._meta.app_label, field.rel.to._meta.model_name))
                     if hasattr(field.rel, "through") and not field.rel.through._meta.auto_created:
                         related_fields.append((field.name, field.rel.through._meta.app_label, field.rel.through._meta.model_name))
-            for field in new_apps.get_model(app_label, model_name)._meta.local_many_to_many:
-                if field.rel.to:
-                    related_fields.append((field.name, field.rel.to._meta.app_label, field.rel.to._meta.model_name))
-                if hasattr(field.rel, "through") and not field.rel.through._meta.auto_created:
-                    related_fields.append((field.name, field.rel.through._meta.app_label, field.rel.through._meta.model_name))
             if related_fields:
                 pending_add[app_label, model_name] = related_fields
             else:
@@ -359,16 +356,71 @@ class MigrationAutodetector(object):
                 )
         for app_label, operation in unique_together_operations:
             self.add_to_migration(app_label, operation)
+
         # Removing models
         removed_models = set(old_model_keys) - set(new_model_keys)
+        conflict_sources = {}
+        # If models being removed have dependencies between them, we will need to remove them in
+        # a certain order; if the dependencies are circular, we will need to remove their fields
+        # in a separate migration first.
+
+        # First, assemble a data structure to track all references between models being removed
         for app_label, model_name in removed_models:
-            model_state = self.from_state.models[app_label, model_name]
-            self.add_to_migration(
-                app_label,
-                operations.DeleteModel(
-                    model_state.name,
-                )
-            )
+            related_fields = []
+            for field in itertools.chain(old_apps.get_model(app_label, model_name)._meta.local_fields,
+                                         old_apps.get_model(app_label, model_name)._meta.local_many_to_many):
+                if field.rel:
+                    if field.rel.to:
+                        related_fields.append((field.name, field.rel.to._meta.app_label, field.rel.to._meta.model_name))
+                    if hasattr(field.rel, "through") and not field.rel.through._meta.auto_created:
+                        related_fields.append((field.name, field.rel.through._meta.app_label, field.rel.through._meta.model_name))
+            if related_fields:
+                conflict_sources[app_label, model_name] = related_fields
+
+        # Find and migrate all models that are not the target of any conflict, and repeat until
+        # no more progress can be made
+        pending_removes = sorted(removed_models) # sort this so removes happen deterministically
+        removed_fields = set()
+        while True:
+            safe_to_remove = True # just to start the loop
+            while safe_to_remove:
+                targets = {(conflict[1], conflict[2]) for conflict in itertools.chain(*conflict_sources.values())}
+                safe_to_remove = set(pending_removes) - targets
+                for app_label, model_name in safe_to_remove:
+                    model_state = self.from_state.models[app_label, model_name]
+                    self.add_to_migration(
+                        app_label,
+                        operations.DeleteModel(
+                            name=model_state.name,
+                        )
+                    )
+                    # if it's already been migrated, it's no longer the source of a conflict
+                    conflict_sources.pop((app_label, model_name), None)
+                    pending_removes.remove((app_label, model_name))
+
+            # If any removes are pending at this stage, choose one of the pending models and remove
+            # all fields that reference it. Then try to remove models from the top again.
+            if pending_removes:
+                model_to_remove = pending_removes.pop()
+                for (app_label, model_name), conflicts in conflict_sources.items():
+                    for field_name, target_app_label, target_model_name in conflicts:
+                        if (target_app_label, target_model_name) == model_to_remove and (app_label, model_name, field_name) not in removed_fields:
+                            self.add_to_migration(
+                                app_label,
+                                operations.RemoveField(
+                                    model_name=model_name,
+                                    name=field_name,
+                                )
+                            )
+                            removed_fields.add((app_label, model_name, field_name))
+                # Prune the conflicts lists.
+                for (app_label, model_name), conflicts in conflict_sources.items():
+                    for field_name, target_app_label, target_model_name in list(conflicts):
+                        if (app_label, model_name, field_name) in removed_fields:
+                            conflicts.remove((field_name, target_app_label, target_model_name))
+            else:
+                break
+
         # Alright, now add internal dependencies
         for app_label, migrations in self.migrations.items():
             for m1, m2 in zip(migrations, migrations[1:]):

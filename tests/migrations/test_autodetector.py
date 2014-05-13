@@ -41,6 +41,8 @@ class AutodetectorTests(TestCase):
         ("id", models.AutoField(primary_key=True)),
         ("publishers", models.ManyToManyField("testapp.Publisher")),
     ])
+    author_with_m2m_through = ModelState("testapp", "Author", [("id", models.AutoField(primary_key=True)), ("publishers", models.ManyToManyField("testapp.Publisher", through="testapp.Contract"))])
+    contract = ModelState("testapp", "Contract", [("id", models.AutoField(primary_key=True)), ("author", models.ForeignKey("testapp.Author")), ("publisher", models.ForeignKey("testapp.Publisher"))])
     publisher = ModelState("testapp", "Publisher", [("id", models.AutoField(primary_key=True)), ("name", models.CharField(max_length=100))])
     publisher_with_author = ModelState("testapp", "Publisher", [("id", models.AutoField(primary_key=True)), ("author", models.ForeignKey("testapp.Author")), ("name", models.CharField(max_length=100))])
     publisher_with_book = ModelState("testapp", "Publisher", [("id", models.AutoField(primary_key=True)), ("author", models.ForeignKey("otherapp.Book")), ("name", models.CharField(max_length=100))])
@@ -666,3 +668,72 @@ class AutodetectorTests(TestCase):
         action = migration.operations[1]
         self.assertEqual(action.__class__.__name__, "DeleteModel")
         self.assertEqual(action.name, "Attribution")
+
+    def test_m2m_w_through_multistep_remove(self):
+        """
+        A model with a m2m field that specifies a "through" model cannot be removed in the same
+        migration as that through model as the schema will pass through an inconsistent state.
+        The autodetector should produce two migrations to avoid this issue.
+        """
+        before = self.make_project_state([self.author_with_m2m_through, self.publisher, self.contract])
+        after = self.make_project_state([self.publisher])
+        autodetector = MigrationAutodetector(before, after)
+        changes = autodetector._detect_changes()
+        raise Exception(changes['testapp'][0].operations)
+        # Right number of migrations?
+        self.assertEqual(len(changes['testapp']), 1)
+        # Right number of actions?
+        migration = changes['testapp'][0]
+        self.assertEqual(len(migration.operations), 2)
+        # Right actions in right order?
+        action = migration.operations[0]
+        self.assertEqual(action.__class__.__name__, "RemoveField")
+        action = migration.operations[1]
+        self.assertEqual(action.__class__.__name__, "DeleteModel")
+        self.assertEqual(action.name, "Contract")
+        # Right number of actions?
+        migration = changes['testapp'][1]
+        self.assertEqual(len(migration.operations), 1)
+        # Right actions in right order?
+        action = migration.operations[0]
+        self.assertEqual(action.__class__.__name__, "DeleteModel")
+        self.assertEqual(action.name, "Author")
+
+    def test_non_circular_foreignkey_dependency_removal(self):
+        """
+        If two models with a ForeignKey from one to the other are removed at the same time,
+        the autodetector should remove them in the correct order.
+        """
+        before = self.make_project_state([self.author_with_publisher, self.publisher])
+        after = self.make_project_state([])
+        autodetector = MigrationAutodetector(before, after)
+        changes = autodetector._detect_changes()
+        # Right number of migrations?
+        self.assertEqual(len(changes['testapp']), 1)
+        # Right number of actions?
+        migration = changes['testapp'][0]
+        self.assertEqual(len(migration.operations), 2)
+        # Right actions in right order?
+        action = migration.operations[0]
+        self.assertEqual(action.__class__.__name__, "DeleteModel")
+        self.assertEqual(action.name, "Author")
+        action = migration.operations[1]
+        self.assertEqual(action.__class__.__name__, "DeleteModel")
+        self.assertEqual(action.name, "Publisher")
+
+        before = self.make_project_state([self.author_empty, self.publisher_with_author])
+        after = self.make_project_state([])
+        autodetector = MigrationAutodetector(before, after)
+        changes = autodetector._detect_changes()
+        # Right number of migrations?
+        self.assertEqual(len(changes['testapp']), 1)
+        # Right number of actions?
+        migration = changes['testapp'][0]
+        self.assertEqual(len(migration.operations), 2)
+        # Right actions in right order?
+        action = migration.operations[0]
+        self.assertEqual(action.__class__.__name__, "DeleteModel")
+        self.assertEqual(action.name, "Publisher")
+        action = migration.operations[1]
+        self.assertEqual(action.__class__.__name__, "DeleteModel")
+        self.assertEqual(action.name, "Author")

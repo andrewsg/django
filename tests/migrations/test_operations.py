@@ -437,6 +437,22 @@ class OperationTests(MigrationTestBase):
         operations = [migrations.RemoveField("Pony", "stables")]
         self.apply_operations("test_rmflmmwt", project_state, operations=operations)
 
+    # def test_remove_field_m2m_with_through_and_all_models(self):
+    #     project_state = self.set_up_test_model("test_rmflmmwtaam", second_model=True)
+
+    #     self.assertTableNotExists("test_rmflmmwtaam_ponystables")
+    #     project_state = self.apply_operations("test_rmflmmwtaam", project_state, operations=[
+    #         migrations.CreateModel("PonyStables", fields=[
+    #             ("pony", models.ForeignKey('test_rmflmmwtaam.Pony')),
+    #             ("stable", models.ForeignKey('test_rmflmmwtaam.Stable')),
+    #         ]),
+    #         migrations.AddField("Pony", "stables", models.ManyToManyField("Stable", related_name="ponies", through='test_rmflmmwtaam.PonyStables'))
+    #     ])
+    #     self.assertTableExists("test_rmflmmwtaam_ponystables")
+
+    #     operations = [migrations.DeleteModel("Pony"), migrations.DeleteModel("Stable"), migrations.DeleteModel("PonyStables")]
+    #     self.apply_operations("test_rmflmmwtaam", project_state, operations=operations)
+
     def test_remove_field(self):
         """
         Tests the RemoveField operation.
